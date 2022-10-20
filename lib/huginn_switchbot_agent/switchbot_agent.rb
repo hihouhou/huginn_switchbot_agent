@@ -29,9 +29,9 @@ module Agents
     form_configurable :secret, type: :string
     form_configurable :expected_receive_period_in_days, type: :string
     form_configurable :changes_only, type: :boolean
-    form_configurable :type, type: :array, values: ['get_device', 'soy_cs_pending_rewards']
+    form_configurable :type, type: :array, values: ['get_devices_status', 'get_device_status', 'service_status', 'rate_limit_wometer']
     def validate_options
-      errors.add(:base, "type has invalid value: should be 'get_device'") if interpolated['type'].present? && !%w(get_device soy_cs_pending_rewards).include?(interpolated['type'])
+      errors.add(:base, "type has invalid value: should be 'get_device_status' 'get_devices_status' 'service_status' 'rate_limit_wometer'") if interpolated['type'].present? && !%w(get_device_status get_devices_status service_status rate_limit_wometer).include?(interpolated['type'])
 
       unless options['token'].present?
         errors.add(:base, "token is a required field")
@@ -62,7 +62,7 @@ module Agents
       incoming_events.each do |event|
         interpolate_with(event) do
           log event
-          trigger_action
+          trigger_action(event)
         end
       end
     end
@@ -84,6 +84,60 @@ module Agents
 
     end
 
+    def rate_limit_wometer(event)
+      if !event.nil?
+        if event.payload.to_s != memory["#{event.payload['context']['deviceMac']}"]
+          if !memory["#{event.payload['context']['deviceMac']}"].nil?
+            if interpolated['debug'] == 'true'
+              log event.payload
+            end
+            last_status = memory["#{event.payload['context']['deviceMac']}"].gsub("=>", ": ")
+            last_status = JSON.parse(last_status)
+            current_time = Time.now
+            if (event.payload['context']['timeOfSample'].to_i - current_time.strftime('%s%L').to_i) > 3600000
+              if interpolated['debug'] == 'true'
+                log "> 1H"
+              end
+              create_event payload: event.payload
+              memory["#{event.payload['context']['deviceMac']}"] = event.payload.to_s
+            else
+              if interpolated['debug'] == 'true'
+                log "< 1H"
+              end
+            end
+          else
+            if interpolated['debug'] == 'true'
+              log "last_status is empty"
+            end
+            create_event payload: event.payload
+            memory["#{event.payload['context']['deviceMac']}"] = event.payload.to_s
+          end
+        end
+      end
+    end
+
+    def service_status()
+
+        uri = URI.parse("https://status.switch-bot.com/api/v2/status.json")
+        response = Net::HTTP.get_response(uri)
+
+        log "fetch status request status : #{response.code}"
+        parsed_json = JSON.parse(response.body)
+        payload = { :status => { :indicator => "#{parsed_json['status']['indicator']}", :description => "#{parsed_json['status']['description']}" } }
+
+        if interpolated['changes_only'] == 'true'
+          if payload.to_s != memory['last_status']
+            memory['last_status'] = payload.to_s
+            create_event payload: payload
+          end
+        else
+          create_event payload: payload
+          if payload.to_s != memory['last_status']
+            memory['last_status'] = payload.to_s
+          end
+        end
+    end
+
     def generate_nonce
       (Time.now.to_f * 1000).to_i
     end
@@ -95,7 +149,81 @@ module Agents
       Base64.encode64(OpenSSL::HMAC.digest('sha256', interpolated['secret'], mixed_token)).gsub(/\n/, '')
     end
 
-    def get_device(ts)
+    def get_devices_status(ts)
+      nonce = generate_nonce
+      sign = get_sign(ts,nonce)
+      url = 'https://api.switch-bot.com/v1.1/devices'
+      if interpolated['debug'] == 'true'
+        log "url #{url}"
+        log "sign #{sign}"
+        log "ts #{ts}"
+        log "nonce #{nonce}"
+        log "token #{interpolated['token']}"
+      end
+#quickanddirty test start
+      command = %x{curl -s '#{url}' -H 'Authorization: #{interpolated['token']}' -H 'User-Agent: Switchbot (https://github.com/hihouhou/huginn_switchbot_agent)' -H 'sign: #{sign}' -H 'nonce: #{nonce}' -H 't: #{ts}' -H 'Content-type: application/json'}
+      if interpolated['debug'] == 'true'
+        log command
+      end
+#quickanddirty test stop
+#      uri = URI.parse(url)
+#      request = Net::HTTP::Get.new(uri)
+#      request.content_type = "application/json"
+#      request["Authorization"] = interpolated['token']
+#      request["sign"] = sign
+#      request["t"] = ts.to_i
+#      request["User-Agent"] = " Switchbot (https://github.com/hihouhou/huginn_switchbot_agent)"
+#      request["nonce"] = nonce
+#
+#      req_options = {
+#        use_ssl: uri.scheme == "https",
+#      }
+#
+#      response = Net::HTTP.start(uri.hostname, uri.port, req_options) do |http|
+#        http.request(request)
+#      end
+#
+#      log_curl_output(response.code,response.body)
+
+      payload = JSON.parse(command)
+
+      if payload['message'] == 'success'
+        if interpolated['changes_only'] == 'true'
+          if payload.to_s != memory['get_devices_status']
+            payload['body']['deviceList'].each do |device|
+              found = false
+              if !memory['get_devices_status'].nil?
+                last_status = memory['get_devices_status'].gsub("=>", ": ")
+                last_status = JSON.parse(last_status)
+                last_status['body']['deviceList'].each do |devicebis|
+                  if device == devicebis
+                    found = true
+                  end
+                  if interpolated['debug'] == 'true'
+                    log "found is #{found}!"
+                  end
+                end
+              end
+              if found == false
+                if interpolated['debug'] == 'true'
+                  log "found is #{found}! so event created"
+                  log device
+                end
+                create_event payload: device
+              end
+            end
+            memory['get_devices_status'] = payload.to_s
+          end
+        else
+          if payload.to_s != memory['get_devices_status']
+            memory['get_devices_status'] = payload.to_s
+          end
+          create_event payload: payload
+        end
+      end
+    end
+
+    def get_device_status(ts)
       nonce = generate_nonce
       sign = get_sign(ts,nonce)
       url = 'https://api.switch-bot.com/v1.1/devices/' + interpolated['device'] + '/status'
@@ -106,35 +234,42 @@ module Agents
         log "token #{interpolated['token']}"
       end
 
-      uri = URI.parse(url)
-      request = Net::HTTP::Get.new(uri)
-      request.content_type = "application/json"
-      request["Authorization"] = interpolated['token']
-      request["sign"] = sign
-      request["t"] = ts.to_i
-      request["nonce"] = nonce
-      
-      req_options = {
-        use_ssl: uri.scheme == "https",
-      }
-      
-      response = Net::HTTP.start(uri.hostname, uri.port, req_options) do |http|
-        http.request(request)
+#      uri = URI.parse(url)
+#      request = Net::HTTP::Get.new(uri)
+#      request.content_type = "application/json"
+#      request["Authorization"] = interpolated['token']
+#      request["sign"] = sign
+#      request["t"] = ts.to_i
+#      request["nonce"] = nonce
+#
+#      req_options = {
+#        use_ssl: uri.scheme == "https",
+#      }
+#
+#      response = Net::HTTP.start(uri.hostname, uri.port, req_options) do |http|
+#        http.request(request)
+#      end
+#
+#      log_curl_output(response.code,response.body)
+#
+#      payload = JSON.parse(response.body)
+
+#quickanddirty test start
+      command = %x{curl -s '#{url}' -H 'Authorization: #{interpolated['token']}' -H 'User-Agent: Switchbot (https://github.com/hihouhou/huginn_switchbot_agent)' -H 'sign: #{sign}' -H 'nonce: #{nonce}' -H 't: #{ts}' -H 'Content-type: application/json'}
+      if interpolated['debug'] == 'true'
+        log command
       end
-
-      log_curl_output(response.code,response.body)
-
-      payload = JSON.parse(response.body)
-
-      if response.code == '200' or payload['message'] == 'success'
+#quickanddirty test stop
+      payload = JSON.parse(command)
+      if payload['message'] == 'success'
         if interpolated['changes_only'] == 'true'
-          if payload.to_s != memory['get_device']
-            memory['get_device'] = payload.to_s
+          if payload.to_s != memory['get_device_status']
+            memory['get_device_status'] = payload.to_s
             create_event payload: payload
           end
         else
-          if payload.to_s != memory['get_device']
-            memory['get_device'] = payload.to_s
+          if payload.to_s != memory['get_device_status']
+            memory['get_device_status'] = payload.to_s
           end
           create_event payload: payload
         end
@@ -142,12 +277,18 @@ module Agents
     end
 
 
-    def trigger_action
+    def trigger_action(event=nil)
 
       ts = Time.now.to_i * 1000
       case interpolated['type']
-      when "get_device"
-        get_device(ts)
+      when "get_device_status"
+        get_device_status(ts)
+      when "get_devices_status"
+        get_devices_status(ts)
+      when "service_status"
+        service_status()
+      when "rate_limit_wometer"
+        rate_limit_wometer(event)
       else
         log "Error: type has an invalid value (#{type})"
       end

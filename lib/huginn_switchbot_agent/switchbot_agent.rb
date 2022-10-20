@@ -33,11 +33,11 @@ module Agents
     def validate_options
       errors.add(:base, "type has invalid value: should be 'get_device_status' 'get_devices_status' 'service_status' 'rate_limit_wometer'") if interpolated['type'].present? && !%w(get_device_status get_devices_status service_status rate_limit_wometer).include?(interpolated['type'])
 
-      unless options['token'].present?
+      unless options['token'].present? || !['get_devices_status', 'get_device_status'].include?(options['type'])
         errors.add(:base, "token is a required field")
       end
 
-      unless options['secret'].present?
+      unless options['secret'].present? || !['get_devices_status', 'get_device_status'].include?(options['type'])
         errors.add(:base, "secret is a required field")
       end
 
@@ -93,8 +93,7 @@ module Agents
             end
             last_status = memory["#{event.payload['context']['deviceMac']}"].gsub("=>", ": ")
             last_status = JSON.parse(last_status)
-            current_time = Time.now
-            if (event.payload['context']['timeOfSample'].to_i - current_time.strftime('%s%L').to_i) > 3600000
+            if (event.payload['context']['timeOfSample'].to_i - last_status['context']['timeOfSample']) > 3600000
               if interpolated['debug'] == 'true'
                 log "> 1H"
               end

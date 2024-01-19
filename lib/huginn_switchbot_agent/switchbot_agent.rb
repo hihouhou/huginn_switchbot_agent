@@ -13,7 +13,7 @@ module Agents
 
     def default_options
       {
-        'type' => '',
+        'type' => 'service_status',
         'token' => '',
         'secret' => '',
         'device' => '',
@@ -117,24 +117,26 @@ module Agents
 
     def service_status()
 
-        uri = URI.parse("https://status.switch-bot.com/api/v2/status.json")
-        response = Net::HTTP.get_response(uri)
+      uri = URI.parse("https://status.switch-bot.com/api/v2/status.json")
+      response = Net::HTTP.get_response(uri)
 
-        log "fetch status request status : #{response.code}"
-        parsed_json = JSON.parse(response.body)
-        payload = { :status => { :indicator => "#{parsed_json['status']['indicator']}", :description => "#{parsed_json['status']['description']}" } }
+      log_curl_output(response.code,response.body)
 
-        if interpolated['changes_only'] == 'true'
-          if payload.to_s != memory['last_status']
-            memory['last_status'] = payload.to_s
-            create_event payload: payload
-          end
-        else
-          create_event payload: payload
-          if payload.to_s != memory['last_status']
-            memory['last_status'] = payload.to_s
-          end
+      payload = JSON.parse(response.body)
+      event = payload.dup
+      event = { :status => { :name =>  "#{payload['page']['name']}", :indicator => "#{payload['status']['indicator']}", :description => "#{payload['status']['description']}" } }
+
+      if interpolated['changes_only'] == 'true'
+        if payload != memory['last_status']
+          memory['last_status'] = payload
+          create_event payload: event
         end
+      else
+        create_event payload: event
+        if payload != memory['last_status']
+          memory['last_status'] = payload
+        end
+      end
     end
 
     def generate_nonce
@@ -151,20 +153,31 @@ module Agents
     def get_devices_status(ts)
       nonce = generate_nonce
       sign = get_sign(ts,nonce)
-      url = 'https://api.switch-bot.com/v1.1/devices'
+#      url = 'https://api.switch-bot.com/v1.1/devices'
       if interpolated['debug'] == 'true'
-        log "url #{url}"
+#        log "url #{url}"
         log "sign #{sign}"
         log "ts #{ts}"
         log "nonce #{nonce}"
         log "token #{interpolated['token']}"
       end
 #quickanddirty test start
-      command = %x{curl -s '#{url}' -H 'Authorization: #{interpolated['token']}' -H 'User-Agent: Switchbot (https://github.com/hihouhou/huginn_switchbot_agent)' -H 'sign: #{sign}' -H 'nonce: #{nonce}' -H 't: #{ts}' -H 'Content-type: application/json'}
-      if interpolated['debug'] == 'true'
-        log command
-      end
+#      command = %x{curl -s '#{url}' -H 'Authorization: #{interpolated['token']}' -H 'User-Agent: Switchbot (https://github.com/hihouhou/huginn_switchbot_agent)' -H 'sign: #{sign}' -H 'nonce: #{nonce}' -H 't: #{ts}' -H 'Content-type: application/json'}
+#      if interpolated['debug'] == 'true'
+#        log command
+#      end
+#      payload = JSON.parse(command)
 #quickanddirty test stop
+      headers = {
+        'Authorization' => interpolated['token'],
+        't' => ts,
+        'sign' => sign,
+        'nonce' => nonce,
+      }
+      
+      client = NetHttp2::Client.new("https://api.switch-bot.com")
+      response = client.call(:get, '/v1.1/devices', headers: headers)
+
 #      uri = URI.parse(url)
 #      request = Net::HTTP::Get.new(uri)
 #      request.content_type = "application/json"
@@ -182,9 +195,9 @@ module Agents
 #        http.request(request)
 #      end
 #
+      log_curl_output(response.status,response.body)
 #      log_curl_output(response.code,response.body)
-
-      payload = JSON.parse(command)
+      payload = response.body
 
       if payload['message'] == 'success'
         if interpolated['changes_only'] == 'true'

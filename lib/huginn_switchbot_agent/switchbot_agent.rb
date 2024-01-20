@@ -128,8 +128,12 @@ module Agents
 
       if interpolated['changes_only'] == 'true'
         if payload != memory['last_status']
+          if memory['last_status'].nil?
+            create_event payload: event
+          elsif !memory['last_status']['status'].nil? and memory['last_status']['status'].present? and payload['status'] != memory['last_status']['status']
+            create_event payload: event
+          end
           memory['last_status'] = payload
-          create_event payload: event
         end
       else
         create_event payload: event
